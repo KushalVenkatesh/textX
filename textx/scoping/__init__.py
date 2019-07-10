@@ -8,7 +8,7 @@
 import glob
 import os
 import errno
-from os.path import join, exists
+from os.path import join, exists, abspath
 
 
 def metamodel_for_file_or_default_metamodel(filename, the_metamodel):
@@ -44,7 +44,16 @@ class ModelRepository(object):
         self.filename_to_model = {}
 
     def has_model(self, filename):
-        return filename in self.filename_to_model
+        return abspath(filename) in self.filename_to_model
+
+    def remove_model(self, model):
+        filename = None
+        for f, m in self.filename_to_model.items():
+            if m == model:
+                filename = f
+        if filename:
+            # print("*** delete {}".format(filename))
+            del self.filename_to_model[filename]
 
 
 class GlobalModelRepository(object):
@@ -81,6 +90,14 @@ class GlobalModelRepository(object):
             self.all_models = all_models  # used to reuse already loaded models
         else:
             self.all_models = ModelRepository()
+
+    def remove_model(self, model):
+        self.all_models.remove_model(model)
+        self.local_models.remove_model(model)
+
+    def remove_models(self, models):
+        for m in models:
+            self.remove_model(m)
 
     def load_models_using_filepattern(
             self, filename_pattern, model, glob_args, is_main_model=False,
@@ -168,8 +185,10 @@ class GlobalModelRepository(object):
             the loaded/cached model
         """
 
+        filename = abspath(filename)
         if not self.local_models.has_model(filename):
             if self.all_models.has_model(filename):
+                # print("CACHED {}".format(filename))
                 new_model = self.all_models.filename_to_model[filename]
             else:
                 # print("LOADING {}".format(filename))
@@ -183,11 +202,16 @@ class GlobalModelRepository(object):
             # print("ADDING {}".format(filename))
             if add_to_local_models:
                 self.local_models.filename_to_model[filename] = new_model
+        else:
+            # print("LOCALLY CACHED {}".format(filename))
+            pass
+
         assert self.all_models.has_model(filename)  # to be sure...
         return self.all_models.filename_to_model[filename]
 
     def _add_model(self, model):
         filename = self.update_model_in_repo_based_on_filename(model)
+        # print("ADDED {}".format(filename))
         self.local_models.filename_to_model[filename] = model
 
     def update_model_in_repo_based_on_filename(self, model):
@@ -204,6 +228,7 @@ class GlobalModelRepository(object):
         if model._tx_filename is None:
             for fn in self.all_models.filename_to_model:
                 if self.all_models.filename_to_model[fn] == model:
+                    # print("UPDATED/CACHED {}".format(fn))
                     return fn
             i = 0
             while self.all_models.has_model("anonymous{}".format(i)):
@@ -211,9 +236,10 @@ class GlobalModelRepository(object):
             myfilename = "anonymous{}".format(i)
             self.all_models.filename_to_model[myfilename] = model
         else:
-            myfilename = model._tx_filename
+            myfilename = abspath(model._tx_filename)
             if (not self.all_models.has_model(myfilename)):
                 self.all_models.filename_to_model[myfilename] = model
+        # print("UPDATED/ADDED/CACHED {}".format(myfilename))
         return myfilename
 
     def pre_ref_resolution_callback(self, other_model):
@@ -226,9 +252,10 @@ class GlobalModelRepository(object):
         Returns:
             nothing
         """
-        # print("PRE-CALLBACK{}".format(filename))
         filename = other_model._tx_filename
+        # print("PRE-CALLBACK -> {}".format(filename))
         assert (filename)
+        filename = abspath(filename)
         other_model._tx_model_repository = \
             GlobalModelRepository(self.all_models)
         self.all_models.filename_to_model[filename] = other_model
@@ -252,6 +279,22 @@ def get_all_models_including_attached_models(model):
     get a list of all models stored within a model
     (including the owning model).
 
+    @deprecated (BIC): use model_object.get_included_models()
+
+    Args:
+        model: the owning model
+
+    Returns:
+        a list of all models
+    """
+    return get_included_models(model)
+
+
+def get_included_models(model):
+    """
+    get a list of all models stored within a model
+    (including the owning model).
+
     Args:
         model: the owning model
 
@@ -266,3 +309,43 @@ def get_all_models_including_attached_models(model):
     else:
         models = [model]
     return models
+
+
+def is_file_included(filename, model):
+    """
+    Determines if a file is included by a model. Also checks
+    for indirect inclusions (files included by included files).
+
+    Args:
+        filename: the file to be checked (filename is normalized)
+        model: the owning model
+
+    Returns:
+        True if the file is included, else False
+        (Note: if no _tx_model_repository is present,
+        the function always returns False)
+    """
+    if (hasattr(model, "_tx_model_repository")):
+        all_entries = model._tx_model_repository.all_models
+        return all_entries.has_model(filename)
+    else:
+        return False
+
+
+def remove_models_from_repositories(model, models_to_be_removed):
+    """
+    Removed models from all relevant repositories (_tx_model_repository
+    of models and metamodel, if applicable).
+
+    Args:
+        model: the model from which has to be removed
+        models_to_be_removed: models to be removed
+
+    Returns:
+        None
+    """
+    if hasattr(model._tx_metamodel, "_tx_model_repository"):
+        model._tx_metamodel. \
+            _tx_model_repository.remove_models(models_to_be_removed)
+    if hasattr(model, "_tx_model_repository"):
+        model._tx_model_repository.remove_models(models_to_be_removed)
